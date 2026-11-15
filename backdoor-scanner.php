@@ -41,5 +41,83 @@ function bs_render_page() {
     }
 
     echo '</tbody></table>';
+    bs_render_cron_section();
     echo '</div>';
+}
+
+function bs_render_cron_section() {
+    $crons = _get_cron_array();
+    if ( ! $crons ) {
+        $crons = array();
+    }
+
+    echo '<h2>Scheduled tasks (cron)</h2>';
+    echo '<table class="widefat striped">';
+    echo '<thead><tr><th>Hook</th><th>Next run</th><th>Repeats</th><th>Runs</th></tr></thead>';
+    echo '<tbody>';
+
+    foreach ( $crons as $timestamp => $hooks ) {
+        foreach ( $hooks as $hook => $events ) {
+            foreach ( $events as $event ) {
+                $repeats = $event['schedule'] ? $event['schedule'] : 'Once';
+
+                echo '<tr>';
+                echo '<td>' . esc_html( $hook ) . '</td>';
+                echo '<td>' . esc_html( wp_date( 'Y-m-d H:i', $timestamp ) ) . '</td>';
+                echo '<td>' . esc_html( $repeats ) . '</td>';
+
+                $runs = '<em>Nothing attached</em>';
+                $callbacks = bs_get_hook_callbacks( $hook );
+                if ( $callbacks ) {
+                    $runs = '';
+                    foreach ( $callbacks as $cb ) {
+                        $runs .= esc_html( $cb['name'] ) . '<br><code>' . esc_html( $cb['file'] ) . '</code><br>';
+                    }
+                }
+                echo '<td>' . $runs . '</td>';
+
+                echo '</tr>';
+            }
+        }
+    }
+
+    echo '</tbody></table>';
+}
+
+function bs_get_hook_callbacks( $hook ) {
+    global $wp_filter;
+
+    $found = array();
+
+    if ( empty( $wp_filter[ $hook ] ) ) {
+        return $found;
+    }
+
+    foreach ( $wp_filter[ $hook ]->callbacks as $priority => $callbacks ) {
+        foreach ( $callbacks as $callback ) {
+            $function = $callback['function'];
+
+            try {
+                if ( is_array( $function ) ) {
+                    $reflection = new ReflectionMethod( $function[0], $function[1] );
+                    $class      = is_object( $function[0] ) ? get_class( $function[0] ) : $function[0];
+                    $name       = $class . '::' . $function[1];
+                } else {
+                    $reflection = new ReflectionFunction( $function );
+                    $name       = is_string( $function ) ? $function : 'Anonymous function';
+                }
+                $file = str_replace( ABSPATH, '', $reflection->getFileName() );
+            } catch ( ReflectionException $e ) {
+                $name = 'Unknown';
+                $file = 'Unknown';
+            }
+
+            $found[] = array(
+                'name' => $name,
+                'file' => $file,
+            );
+        }
+    }
+
+    return $found;
 }
