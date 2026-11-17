@@ -42,6 +42,7 @@ function bs_render_page() {
 
     echo '</tbody></table>';
     bs_render_cron_section();
+    bs_render_file_section();
     echo '</div>';
 }
 
@@ -115,6 +116,94 @@ function bs_get_hook_callbacks( $hook ) {
             $found[] = array(
                 'name' => $name,
                 'file' => $file,
+            );
+        }
+    }
+
+    return $found;
+}
+
+function bs_render_file_section() {
+    $uploads = wp_upload_dir();
+
+    $results = array_merge(
+        bs_scan_files( $uploads['basedir'], true ),  // true = flag every PHP file in uploads
+        bs_scan_files( get_theme_root(), false )
+    );
+
+    echo '<h2>Suspicious code</h2>';
+    echo '<p>Checks the uploads folder and themes. Any PHP file in uploads is flagged, since uploads should only hold media.</p>';
+
+    if ( ! $results ) {
+        echo '<p>Nothing found.</p>';
+        return;
+    }
+
+    echo '<table class="widefat striped">';
+    echo '<thead><tr><th>File</th><th>Line</th><th>Found</th><th>Code</th></tr></thead>';
+    echo '<tbody>';
+
+    foreach ( $results as $row ) {
+        echo '<tr>';
+        echo '<td><code>' . esc_html( $row['file'] ) . '</code></td>';
+        echo '<td>' . esc_html( $row['line'] ) . '</td>';
+        echo '<td>' . esc_html( $row['match'] ) . '</td>';
+        echo '<td><code>' . esc_html( $row['code'] ) . '</code></td>';
+        echo '</tr>';
+    }
+
+    echo '</tbody></table>';
+}
+
+function bs_scan_files( $dir, $flag_all_php ) {
+    $found = array();
+
+    if ( ! is_dir( $dir ) ) {
+        return $found;
+    }
+
+    // Function names attackers use to hide or run code. \b stops "filesystem(" matching "system(".
+    $pattern    = '/\b(eval|assert|base64_decode|gzinflate|gzuncompress|str_rot13|shell_exec|system|passthru|exec|popen|proc_open)\s*\(/i';
+    $extensions = array( 'php', 'phtml', 'php5', 'php7', 'inc' );
+
+    $files = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS )
+    );
+
+    foreach ( $files as $file ) {
+        if ( ! in_array( strtolower( $file->getExtension() ), $extensions, true ) ) {
+            continue;
+        }
+        if ( $file->getSize() > 2 * MB_IN_BYTES ) {
+            continue;
+        }
+
+        $lines = file( $file->getPathname() );
+        if ( false === $lines ) {
+            continue;
+        }
+
+        $path = str_replace( ABSPATH, '', $file->getPathname() );
+        $hits = 0;
+
+        foreach ( $lines as $i => $line ) {
+            if ( preg_match_all( $pattern, $line, $m ) ) {
+                $hits++;
+                $found[] = array(
+                    'file'  => $path,
+                    'line'  => $i + 1,
+                    'match' => implode( '(), ', array_unique( $m[1] ) ) . '()',
+                    'code'  => substr( trim( $line ), 0, 120 ),  // Malware is often one huge line, so cut it short
+                );
+            }
+        }
+
+        if ( $flag_all_php && ! $hits ) {
+            $found[] = array(
+                'file'  => $path,
+                'line'  => '-',
+                'match' => 'PHP file in uploads',
+                'code'  => '',
             );
         }
     }
