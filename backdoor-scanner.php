@@ -43,6 +43,7 @@ function bs_render_page() {
     echo '</tbody></table>';
     bs_render_cron_section();
     bs_render_file_section();
+    bs_render_core_section();
     echo '</div>';
 }
 
@@ -209,4 +210,82 @@ function bs_scan_files( $dir, $flag_all_php ) {
     }
 
     return $found;
+}
+
+function bs_render_core_section() {
+    global $wp_version;
+
+    // get_core_checksums() lives in an admin file that isn't always loaded.
+    require_once ABSPATH . 'wp-admin/includes/update.php';
+
+    $checksums = get_core_checksums( $wp_version, get_locale() );
+    if ( ! $checksums && 'en_US' !== get_locale() ) {
+        $checksums = get_core_checksums( $wp_version, 'en_US' );
+    }
+
+    echo '<h2>Core files</h2>';
+
+    if ( ! $checksums ) {
+        echo '<p>Could not get the checksum list from WordPress.org for version ' . esc_html( $wp_version ) . '.</p>';
+        return;
+    }
+
+    echo '<p>Compares WordPress core files with the official list for version ' . esc_html( $wp_version ) . '.</p>';
+
+    $results = array();
+
+    // 1. Changed or missing core files.
+    foreach ( $checksums as $file => $md5 ) {
+        if ( 0 === strpos( $file, 'wp-content/' ) ) {
+            continue; // Themes and plugins are meant to change.
+        }
+
+        $path = ABSPATH . $file;
+
+        if ( ! file_exists( $path ) ) {
+            $results[] = array( 'file' => $file, 'problem' => 'Missing' );
+        } elseif ( md5_file( $path ) !== $md5 ) {
+            $results[] = array( 'file' => $file, 'problem' => 'Changed' );
+        }
+    }
+
+    // 2. Extra files hiding in wp-admin and wp-includes.
+    foreach ( array( 'wp-admin', 'wp-includes' ) as $folder ) {
+        $files = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator( ABSPATH . $folder, FilesystemIterator::SKIP_DOTS )
+        );
+
+        foreach ( $files as $file ) {
+            $relative = str_replace( ABSPATH, '', $file->getPathname() );
+            if ( ! isset( $checksums[ $relative ] ) ) {
+                $results[] = array( 'file' => $relative, 'problem' => 'Not part of WordPress' );
+            }
+        }
+    }
+
+    // 3. Extra PHP files in the root folder. wp-config.php is the only one that should be there.
+    foreach ( glob( ABSPATH . '*.php' ) as $path ) {
+        $relative = basename( $path );
+        if ( 'wp-config.php' !== $relative && ! isset( $checksums[ $relative ] ) ) {
+            $results[] = array( 'file' => $relative, 'problem' => 'Not part of WordPress' );
+        }
+    }
+
+    if ( ! $results ) {
+        echo '<p>All core files match.</p>';
+        return;
+    }
+
+    echo '<table class="widefat striped">';
+    echo '<thead><tr><th>File</th><th>Problem</th></tr></thead>';
+    echo '<tbody>';
+
+    foreach ( $results as $row ) {
+        echo '<tr>';
+        echo '<td><code>' . esc_html( $row['file'] ) . '</code></td>';
+        echo '<td>' . esc_html( $row['problem'] ) . '</td>';
+        echo '</tr>';
+    }
+
+    echo '</tbody></table>';
 }
