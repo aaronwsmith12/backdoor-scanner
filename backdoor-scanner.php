@@ -108,7 +108,7 @@ function bs_get_hook_callbacks( $hook ) {
                     $reflection = new ReflectionFunction( $function );
                     $name       = is_string( $function ) ? $function : 'Anonymous function';
                 }
-                $file = str_replace( ABSPATH, '', $reflection->getFileName() );
+                $file = bs_relative_path( $reflection->getFileName() );
             } catch ( ReflectionException $e ) {
                 $name = 'Unknown';
                 $file = 'Unknown';
@@ -184,7 +184,7 @@ function bs_scan_files( $dir, $flag_all_php ) {
             continue;
         }
 
-        $path = str_replace( ABSPATH, '', $file->getPathname() );
+        $path = bs_relative_path( $file->getPathname() );
         $hits = 0;
 
         foreach ( $lines as $i => $line ) {
@@ -256,7 +256,7 @@ function bs_render_core_section() {
         );
 
         foreach ( $files as $file ) {
-            $relative = str_replace( ABSPATH, '', $file->getPathname() );
+            $relative = bs_relative_path( $file->getPathname() );
             if ( ! isset( $checksums[ $relative ] ) ) {
                 $results[] = array( 'file' => $relative, 'problem' => 'Not part of WordPress' );
             }
@@ -288,4 +288,13 @@ function bs_render_core_section() {
     }
 
     echo '</tbody></table>';
+}
+
+// Turns /wordpress/wp-includes/x.php into wp-includes/x.php.
+// Only strips ABSPATH from the start. str_replace would also cut it out of the middle of a path.
+function bs_relative_path( $path ) {
+    if ( 0 === strpos( $path, ABSPATH ) ) {
+        return substr( $path, strlen( ABSPATH ) );
+    }
+    return $path;
 }
