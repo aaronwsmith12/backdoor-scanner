@@ -1,0 +1,35 @@
+{
+    "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+    "landingPage": "/wp-admin/tools.php?page=backdoor-scanner",
+    "login": true,
+    "steps": [
+        {
+            "step": "installPlugin",
+            "pluginData": {
+                "resource": "git:directory",
+                "url": "https://github.com/aaronwsmith12/backdoor-scanner",
+                "ref": "main",
+                "refType": "branch"
+            },
+            "options": { "activate": true, "targetFolderName": "backdoor-scanner" }
+        },
+        {
+            "step": "writeFile",
+            "path": "/wordpress/wp-includes/class-wp-cache-helper.php",
+            "data": "<?php\n// Looks like a core file. It is not.\nadd_action( 'wp_maintenance_check', 'wp_maintenance_check_run' );\n\nfunction wp_maintenance_check_run() {\n    eval( base64_decode( 'cmV0dXJuOw==' ) );\n}\n"
+        },
+        {
+            "step": "mkdir",
+            "path": "/wordpress/wp-content/uploads/2026/11"
+        },
+        {
+            "step": "writeFile",
+            "path": "/wordpress/wp-content/uploads/2026/11/thumb.php",
+            "data": "<?php @eval( base64_decode( 'cmV0dXJuOw==' ) );\n"
+        },
+        {
+            "step": "runPHP",
+            "code": "<?php\nrequire_once '/wordpress/wp-load.php';\n\n// 1. Change a core file so it loads the fake one on every page.\nfile_put_contents( ABSPATH . WPINC . '/default-filters.php', \"\\ninclude_once ABSPATH . WPINC . '/class-wp-cache-helper.php';\\n\", FILE_APPEND );\n\n// 2. Hide code in the active theme.\n$functions = get_stylesheet_directory() . '/functions.php';\nif ( ! file_exists( $functions ) ) {\n    file_put_contents( $functions, \"<?php\\n\" );\n}\nfile_put_contents( $functions, \"\\n@eval( base64_decode( 'cmV0dXJuOw==' ) );\\n\", FILE_APPEND );\n\n// 3. Add a rogue admin.\nwp_insert_user( array(\n    'user_login' => 'wp_sysadmin',\n    'user_pass'  => wp_generate_password(),\n    'user_email' => 'sysadmin@example.net',\n    'role'       => 'administrator',\n) );\n\n// 4. Schedule the cron job the fake core file hooks into.\nwp_schedule_event( time(), 'hourly', 'wp_maintenance_check' );\n"
+        }
+    ]
+}
