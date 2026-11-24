@@ -44,6 +44,7 @@ function bs_render_page() {
     bs_render_cron_section();
     bs_render_file_section();
     bs_render_core_section();
+    bs_render_plugin_section();
     echo '</div>';
 }
 
@@ -129,11 +130,12 @@ function bs_render_file_section() {
 
     $results = array_merge(
         bs_scan_files( $uploads['basedir'], true ),  // true = flag every PHP file in uploads
-        bs_scan_files( get_theme_root(), false )
+        bs_scan_files( get_theme_root(), false ),
+        bs_scan_files( WPMU_PLUGIN_DIR, false )
     );
 
     echo '<h2>Suspicious code</h2>';
-    echo '<p>Checks the uploads folder and themes. Any PHP file in uploads is flagged, since uploads should only hold media.</p>';
+    echo '<p>Checks uploads, themes and must-use plugins. Any PHP file in uploads is flagged, since uploads should only hold media.</p>';
 
     if ( ! $results ) {
         echo '<p>Nothing found.</p>';
@@ -297,4 +299,75 @@ function bs_relative_path( $path ) {
         return substr( $path, strlen( ABSPATH ) );
     }
     return $path;
+}
+
+function bs_render_plugin_section() {
+    require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+    echo '<h2>Plugins</h2>';
+    echo '<p>Compares each plugin with its official file list on WordPress.org. Plugins that are not on WordPress.org are checked for suspicious code instead.</p>';
+
+    $own     = dirname( plugin_basename( __FILE__ ) );
+    $results = array();
+
+    foreach ( get_plugins() as $plugin_file => $plugin ) {
+        $slug = dirname( $plugin_file );
+
+        // Single-file plugins like hello.php have no folder to check. Skip this scanner too.
+        if ( '.' === $slug || $own === $slug ) {
+            continue;
+        }
+
+        $dir      = WP_PLUGIN_DIR . '/' . $slug;
+        $url      = 'https://downloads.wordpress.org/plugin-checksums/' . $slug . '/' . $plugin['Version'] . '.json';
+        $response = wp_remote_get( $url );
+
+        if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+            // Not on WordPress.org (or that version isn't), so fall back to the pattern scan.
+            foreach ( bs_scan_files( $dir, false ) as $row ) {
+                $results[] = array( 'file' => $row['file'], 'problem' => 'Suspicious code: ' . $row['match'] );
+            }
+            continue;
+        }
+
+        $data  = json_decode( wp_remote_retrieve_body( $response ), true );
+        $files = isset( $data['files'] ) ? $data['files'] : array();
+
+        // Changed or missing files.
+        foreach ( $files as $file => $hashes ) {
+            $path = $dir . '/' . $file;
+            if ( ! file_exists( $path ) ) {
+                $results[] = array( 'file' => bs_relative_path( $path ), 'problem' => 'Missing' );
+            } elseif ( ! in_array( md5_file( $path ), (array) $hashes['md5'], true ) ) {
+                $results[] = array( 'file' => bs_relative_path( $path ), 'problem' => 'Changed' );
+            }
+        }
+
+        // Extra PHP files that aren't in the official list.
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS )
+        );
+        foreach ( $iterator as $file ) {
+            $relative = substr( $file->getPathname(), strlen( $dir ) + 1 );
+            if ( 'php' === strtolower( $file->getExtension() ) && ! isset( $files[ $relative ] ) ) {
+                $results[] = array( 'file' => bs_relative_path( $file->getPathname() ), 'problem' => 'Not part of this plugin' );
+            }
+        }
+    }
+
+    if ( ! $results ) {
+        echo '<p>All plugins match.</p>';
+        return;
+    }
+
+    echo '<table class="widefat striped">';
+    echo '<thead><tr><th>File</th><th>Problem</th></tr></thead>';
+    echo '<tbody>';
+    foreach ( $results as $row ) {
+        echo '<tr>';
+        echo '<td><code>' . esc_html( $row['file'] ) . '</code></td>';
+        echo '<td>' . esc_html( $row['problem'] ) . '</td>';
+        echo '</tr>';
+    }
+    echo '</tbody></table>';
 }
