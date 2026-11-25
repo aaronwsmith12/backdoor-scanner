@@ -10,12 +10,13 @@ The demo runs in your browser with WordPress Playground. Nothing is installed on
 
 - **Admin users.** Every administrator with their email and sign-up date.
 - **Scheduled tasks.** Every cron job, plus the function and file it runs.
-- **Suspicious code.** Lines in uploads and themes that use functions attackers rely on, like `eval` and `base64_decode`. Any PHP file in uploads is flagged, since that folder should only hold media.
+- **Suspicious code.** Lines in uploads, themes and must-use plugins that use functions attackers rely on, like `eval` and `base64_decode`. Any PHP file in uploads is flagged, since that folder should only hold media.
 - **Core files.** Compares `wp-admin`, `wp-includes` and the root files with the official WordPress.org checksums. Flags files that were changed, are missing or shouldn't be there.
+- **Plugins.** Compares each plugin with its official file list on WordPress.org and flags changed, missing or extra files. Plugins that aren't on WordPress.org get the suspicious code check instead.
 
 ## What the demo site finds, and how to fix it
 
-The demo plants six things that are common on real hacked sites. Several of them work together, which is also common.
+The demo plants eight things that are common on real hacked sites. Several of them work together, which is also common.
 
 ### 1. Rogue admin user
 `wp_sysadmin` was added days after the real admin. Attackers add an admin so they can get back in after the malware is removed.
@@ -62,6 +63,21 @@ wp cron event delete wp_maintenance_check
 </Files>
 ```
 
+### 7. Hidden must-use plugin
+`wp-content/mu-plugins/health-check-loader.php` runs on every page load. Must-use plugins don't show on the Plugins screen and can't be turned off there, which is why attackers like them.
+
+**Fix:** Delete the file. Check every other file in `mu-plugins` too, since most sites have none or only ones their host added.
+
+### 8. Changed plugin file
+One line was added to `wp-content/plugins/akismet/class.akismet.php`. The plugin looks normal in wp-admin, but the file no longer matches WordPress.org.
+
+**Fix:** Reinstall the plugin from WordPress.org, then confirm it:
+
+```
+wp plugin verify-checksums --all
+```
+
+
 ### After the cleanup
 - Find how they got in. Outdated plugins and reused passwords are the usual causes. Check the server access logs around the dates the bad files appeared.
 - Change the hosting, SFTP and database passwords too, not just WordPress.
@@ -81,7 +97,7 @@ wp cron event delete wp_maintenance_check
 
 ## Limits
 
-This is a quick first look, not a full malware scanner. It matches known function names, so heavily obfuscated code can get past it. It doesn't scan plugins or `mu-plugins` yet. A hacked site can also hide things from code running inside it, so check from the server too.
+This is a quick first look, not a full malware scanner. It matches known function names, so heavily obfuscated code can get past it. Plugins that aren't on WordPress.org can only get the pattern check. A hacked site can also hide things from code running inside it, so check from the server too.
 
 ## Run it locally
 
