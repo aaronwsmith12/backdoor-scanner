@@ -14,6 +14,8 @@ add_action( 'admin_menu', 'bs_add_admin_page' );
 
 add_action( 'admin_post_bs_clear_cron', 'bs_handle_clear_cron' );
 
+add_action( 'admin_post_bs_quarantine', 'bs_handle_quarantine' );
+
 function bs_add_admin_page() {
     add_management_page(
         'Backdoor Scanner',   // Text in the browser tab
@@ -152,15 +154,38 @@ function bs_render_file_section() {
     }
 
     echo '<table class="widefat striped">';
-    echo '<thead><tr><th>File</th><th>Line</th><th>Found</th><th>Code</th></tr></thead>';
+    echo '<thead>';
+    echo '<tr>';
+    echo '<th>File</th>';
+    echo '<th>Line</th>';
+    echo '<th>Found</th>';
+    echo '<th>Code</th>';
+    echo '<th>Action</th>';
+    echo '</tr>';
+    echo '</thead>';
     echo '<tbody>';
 
+    $uploads_rel = bs_relative_path( $uploads['basedir'] ) . '/';
+    $mu_rel      = bs_relative_path( WPMU_PLUGIN_DIR ) . '/';
+    $shown       = array();
+
     foreach ( $results as $row ) {
+        $action = '';
+        $whole  = 0 === strpos( $row['file'], $uploads_rel ) || 0 === strpos( $row['file'], $mu_rel );
+
+        if ( $whole && ! isset( $shown[ $row['file'] ] ) ) {
+            $shown[ $row['file'] ] = true;   // one button per file, even if it has several bad lines
+            $action = bs_quarantine_button( $row['file'] );
+        } elseif ( ! $whole ) {
+            $action = '<em>Reinstall the theme</em>';
+        }
+
         echo '<tr>';
         echo '<td><code>' . esc_html( $row['file'] ) . '</code></td>';
         echo '<td>' . esc_html( $row['line'] ) . '</td>';
         echo '<td>' . esc_html( $row['match'] ) . '</td>';
         echo '<td><code>' . esc_html( $row['code'] ) . '</code></td>';
+        echo '<td>' . $action . '</td>';
         echo '</tr>';
     }
 
@@ -288,13 +313,14 @@ function bs_render_core_section() {
     }
 
     echo '<table class="widefat striped">';
-    echo '<thead><tr><th>File</th><th>Problem</th></tr></thead>';
+    echo '<thead><tr><th>File</th><th>Problem</th><th>Action</th></tr></thead>';
     echo '<tbody>';
 
     foreach ( $results as $row ) {
         echo '<tr>';
         echo '<td><code>' . esc_html( $row['file'] ) . '</code></td>';
         echo '<td>' . esc_html( $row['problem'] ) . '</td>';
+        echo '<td>' . ( 0 === strpos( $row['problem'], 'Not part of' ) ? bs_quarantine_button( $row['file'] ) : '' ) . '</td>';
         echo '</tr>';
     }
 
@@ -370,12 +396,13 @@ function bs_render_plugin_section() {
     }
 
     echo '<table class="widefat striped">';
-    echo '<thead><tr><th>File</th><th>Problem</th></tr></thead>';
+    echo '<thead><tr><th>File</th><th>Problem</th><th>Action</th></tr></thead>';
     echo '<tbody>';
     foreach ( $results as $row ) {
         echo '<tr>';
         echo '<td><code>' . esc_html( $row['file'] ) . '</code></td>';
         echo '<td>' . esc_html( $row['problem'] ) . '</td>';
+        echo '<td>' . ( 0 === strpos( $row['problem'], 'Not part of' ) ? bs_quarantine_button( $row['file'] ) : '' ) . '</td>';
         echo '</tr>';
     }
     echo '</tbody></table>';
@@ -412,4 +439,56 @@ function bs_redirect_with_notice( $message ) {
     set_transient( 'bs_notice_' . get_current_user_id(), $message, 60 );
     wp_safe_redirect( admin_url( 'tools.php?page=backdoor-scanner' ) );
     exit;
+}
+
+function bs_quarantine_button( $file ) {
+    return bs_action_button(
+        'bs_quarantine',
+        array( 'file' => $file ),
+        'Quarantine',
+        'Move ' . $file . ' to quarantine? It stops running, and a copy is kept so it can be put back.'
+    );
+}
+
+function bs_handle_quarantine() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( 'You are not allowed to do this.' );
+    }
+    check_admin_referer( 'bs_quarantine' );
+
+    $relative = isset( $_POST['file'] ) ? wp_unslash( $_POST['file'] ) : '';
+    $root     = trailingslashit( realpath( ABSPATH ) );
+    $path     = realpath( ABSPATH . $relative );
+
+    // realpath() resolves tricks like ../ so a request can't point outside the WordPress folder.
+    if ( ! $path || 0 !== strpos( $path, $root ) || ! is_file( $path ) ) {
+        bs_redirect_with_notice( 'Could not find ' . $relative . '.' );
+    }
+    if ( 'wp-config.php' === basename( $path ) || 0 === strpos( $path, realpath( __DIR__ ) ) ) {
+        bs_redirect_with_notice( 'That file is not allowed to be quarantined.' );
+    }
+
+    $dir = WP_CONTENT_DIR . '/bs-quarantine';
+    if ( ! is_dir( $dir ) ) {
+        wp_mkdir_p( $dir );
+        file_put_contents( $dir . '/.htaccess', "Require all denied\n" );
+    }
+
+    // .txt on the end so the server can never run it, and the date so nothing gets overwritten.
+    $target = $dir . '/' . gmdate( 'Ymd-His' ) . '-' . str_replace( '/', '__', $relative ) . '.txt';
+
+    if ( ! rename( $path, $target ) ) {
+        bs_redirect_with_notice( 'Could not move ' . $relative . '. Check file permissions.' );
+    }
+
+    $log   = get_option( 'bs_quarantine_log', array() );
+    $log[] = array(
+        'file'  => $relative,
+        'moved' => bs_relative_path( $target ),
+        'time'  => time(),
+        'user'  => get_current_user_id(),
+    );
+    update_option( 'bs_quarantine_log', $log, false );
+
+    bs_redirect_with_notice( 'Moved ' . $relative . ' to quarantine.' );
 }
