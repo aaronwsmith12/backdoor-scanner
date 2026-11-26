@@ -12,6 +12,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 add_action( 'admin_menu', 'bs_add_admin_page' );
 
+add_action( 'admin_post_bs_clear_cron', 'bs_handle_clear_cron' );
+
 function bs_add_admin_page() {
     add_management_page(
         'Backdoor Scanner',   // Text in the browser tab
@@ -27,6 +29,12 @@ function bs_render_page() {
 
     echo '<div class="wrap">';
     echo '<h1>Backdoor Scanner</h1>';
+    $notice_key = 'bs_notice_' . get_current_user_id();
+    $notice     = get_transient( $notice_key );
+    if ( $notice ) {
+        delete_transient( $notice_key );
+        echo '<div class="notice notice-success"><p>' . esc_html( $notice ) . '</p></div>';
+    }
     echo '<h2>Admin users</h2>';
     echo '<table class="widefat striped">';
     echo '<thead><tr><th>Username</th><th>Email</th><th>Registered</th></tr></thead>';
@@ -56,7 +64,7 @@ function bs_render_cron_section() {
 
     echo '<h2>Scheduled tasks (cron)</h2>';
     echo '<table class="widefat striped">';
-    echo '<thead><tr><th>Hook</th><th>Next run</th><th>Repeats</th><th>Runs</th></tr></thead>';
+    echo '<thead><tr><th>Hook</th><th>Next run</th><th>Repeats</th><th>Runs</th><th>Action</th></tr></thead>';
     echo '<tbody>';
 
     foreach ( $crons as $timestamp => $hooks ) {
@@ -78,6 +86,7 @@ function bs_render_cron_section() {
                     }
                 }
                 echo '<td>' . $runs . '</td>';
+                echo '<td>' . bs_action_button( 'bs_clear_cron', array( 'hook' => $hook ), 'Remove', 'Remove every scheduled run of ' . $hook . '?' ) . '</td>';
 
                 echo '</tr>';
             }
@@ -370,4 +379,37 @@ function bs_render_plugin_section() {
         echo '</tr>';
     }
     echo '</tbody></table>';
+}
+
+// A small form with one button. Every action uses this, so each one gets a nonce and a confirm dialog.
+function bs_action_button( $action, $fields, $label, $confirm ) {
+    $html  = '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"';
+    $html .= ' onsubmit="return confirm(' . esc_attr( wp_json_encode( $confirm ) ) . ');">';
+    $html .= '<input type="hidden" name="action" value="' . esc_attr( $action ) . '">';
+    foreach ( $fields as $name => $value ) {
+        $html .= '<input type="hidden" name="' . esc_attr( $name ) . '" value="' . esc_attr( $value ) . '">';
+    }
+    $html .= wp_nonce_field( $action, '_wpnonce', true, false );
+    $html .= '<button type="submit" class="button button-small">' . esc_html( $label ) . '</button>';
+    $html .= '</form>';
+    return $html;
+}
+
+function bs_handle_clear_cron() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( 'You are not allowed to do this.' );
+    }
+    check_admin_referer( 'bs_clear_cron' );
+
+    $hook  = isset( $_POST['hook'] ) ? sanitize_text_field( wp_unslash( $_POST['hook'] ) ) : '';
+    $count = wp_unschedule_hook( $hook );
+
+    bs_redirect_with_notice( 'Removed ' . (int) $count . ' scheduled run(s) of ' . $hook . '.' );
+}
+
+// Show a one-time message on the scanner page, then send the browser back there.
+function bs_redirect_with_notice( $message ) {
+    set_transient( 'bs_notice_' . get_current_user_id(), $message, 60 );
+    wp_safe_redirect( admin_url( 'tools.php?page=backdoor-scanner' ) );
+    exit;
 }
