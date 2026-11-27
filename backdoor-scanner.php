@@ -16,6 +16,8 @@ add_action( 'admin_post_bs_clear_cron', 'bs_handle_clear_cron' );
 
 add_action( 'admin_post_bs_quarantine', 'bs_handle_quarantine' );
 
+add_action( 'admin_post_bs_restore', 'bs_handle_restore' );
+
 function bs_add_admin_page() {
     add_management_page(
         'Backdoor Scanner',   // Text in the browser tab
@@ -248,13 +250,25 @@ function bs_scan_files( $dir, $flag_all_php ) {
     return $found;
 }
 
-function bs_render_core_section() {
+// The official md5 list for this WordPress version. Falls back to en_US if the site's language has none.
+function bs_core_checksums() {
     global $wp_version;
 
     // get_core_checksums() lives in an admin file that isn't always loaded.
     require_once ABSPATH . 'wp-admin/includes/update.php';
 
     $checksums = get_core_checksums( $wp_version, get_locale() );
+    if ( ! $checksums && 'en_US' !== get_locale() ) {
+        $checksums = get_core_checksums( $wp_version, 'en_US' );
+    }
+    return $checksums;
+}
+
+function bs_render_core_section() {
+    global $wp_version;
+
+    $checksums = bs_core_checksums();
+
     if ( ! $checksums && 'en_US' !== get_locale() ) {
         $checksums = get_core_checksums( $wp_version, 'en_US' );
     }
@@ -320,7 +334,7 @@ function bs_render_core_section() {
         echo '<tr>';
         echo '<td><code>' . esc_html( $row['file'] ) . '</code></td>';
         echo '<td>' . esc_html( $row['problem'] ) . '</td>';
-        echo '<td>' . ( 0 === strpos( $row['problem'], 'Not part of' ) ? bs_quarantine_button( $row['file'] ) : '' ) . '</td>';
+        echo '<td>' . bs_row_action( $row, 'core' ) . '</td>';
         echo '</tr>';
     }
 
@@ -402,7 +416,7 @@ function bs_render_plugin_section() {
         echo '<tr>';
         echo '<td><code>' . esc_html( $row['file'] ) . '</code></td>';
         echo '<td>' . esc_html( $row['problem'] ) . '</td>';
-        echo '<td>' . ( 0 === strpos( $row['problem'], 'Not part of' ) ? bs_quarantine_button( $row['file'] ) : '' ) . '</td>';
+        echo '<td>' . bs_row_action( $row, 'plugin' ) . '</td>';
         echo '</tr>';
     }
     echo '</tbody></table>';
@@ -450,6 +464,33 @@ function bs_quarantine_button( $file ) {
     );
 }
 
+// Extra files get Quarantine. Changed or missing official files get Restore.
+function bs_row_action( $row, $type ) {
+    if ( 0 === strpos( $row['problem'], 'Not part of' ) ) {
+        return bs_quarantine_button( $row['file'] );
+    }
+    if ( in_array( $row['problem'], array( 'Changed', 'Missing' ), true ) ) {
+        return bs_action_button(
+            'bs_restore',
+            array( 'file' => $row['file'], 'type' => $type ),
+            'Restore',
+            'Replace ' . $row['file'] . ' with the official copy from WordPress.org? The current version is saved in quarantine first.'
+        );
+    }
+    return '';
+}
+
+// Makes the quarantine folder if needed and returns a dated .txt path in it.
+// .txt so the server can never run it, and the date so nothing gets overwritten.
+function bs_quarantine_path( $relative ) {
+    $dir = WP_CONTENT_DIR . '/bs-quarantine';
+    if ( ! is_dir( $dir ) ) {
+        wp_mkdir_p( $dir );
+        file_put_contents( $dir . '/.htaccess', "Require all denied\n" );
+    }
+    return $dir . '/' . gmdate( 'Ymd-His' ) . '-' . str_replace( '/', '__', $relative ) . '.txt';
+}
+
 function bs_handle_quarantine() {
     if ( ! current_user_can( 'manage_options' ) ) {
         wp_die( 'You are not allowed to do this.' );
@@ -468,14 +509,7 @@ function bs_handle_quarantine() {
         bs_redirect_with_notice( 'That file is not allowed to be quarantined.' );
     }
 
-    $dir = WP_CONTENT_DIR . '/bs-quarantine';
-    if ( ! is_dir( $dir ) ) {
-        wp_mkdir_p( $dir );
-        file_put_contents( $dir . '/.htaccess', "Require all denied\n" );
-    }
-
-    // .txt on the end so the server can never run it, and the date so nothing gets overwritten.
-    $target = $dir . '/' . gmdate( 'Ymd-His' ) . '-' . str_replace( '/', '__', $relative ) . '.txt';
+    $target = bs_quarantine_path( $relative );
 
     if ( ! rename( $path, $target ) ) {
         bs_redirect_with_notice( 'Could not move ' . $relative . '. Check file permissions.' );
@@ -491,4 +525,104 @@ function bs_handle_quarantine() {
     update_option( 'bs_quarantine_log', $log, false );
 
     bs_redirect_with_notice( 'Moved ' . $relative . ' to quarantine.' );
+}
+
+// Where to download a clean core file, and the md5 it must have.
+function bs_core_source( $relative ) {
+    global $wp_version;
+
+    $checksums = bs_core_checksums();
+    if ( ! isset( $checksums[ $relative ] ) || 0 === strpos( $relative, 'wp-content/' ) ) {
+        return new WP_Error( 'bs_restore', $relative . ' is not a WordPress core file.' );
+    }
+    return array(
+        'url' => 'https://core.svn.wordpress.org/tags/' . $wp_version . '/' . $relative,
+        'md5' => array( $checksums[ $relative ] ),
+    );
+}
+
+// Same for a plugin file. The slug comes from the folder name, the version from the installed plugin.
+function bs_plugin_source( $relative ) {
+    require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+    $prefix = bs_relative_path( WP_PLUGIN_DIR ) . '/';
+    if ( 0 !== strpos( $relative, $prefix ) ) {
+        return new WP_Error( 'bs_restore', $relative . ' is not in the plugins folder.' );
+    }
+
+    // wp-content/plugins/akismet/class.akismet.php becomes akismet and class.akismet.php.
+    list( $slug, $file ) = array_pad( explode( '/', substr( $relative, strlen( $prefix ) ), 2 ), 2, '' );
+
+    $version = '';
+    foreach ( get_plugins() as $plugin_file => $plugin ) {
+        if ( dirname( $plugin_file ) === $slug ) {
+            $version = $plugin['Version'];
+        }
+    }
+    if ( ! $version ) {
+        return new WP_Error( 'bs_restore', 'Could not find the installed version of ' . $slug . '.' );
+    }
+
+    $response = wp_remote_get( 'https://downloads.wordpress.org/plugin-checksums/' . $slug . '/' . $version . '.json' );
+    $data     = json_decode( wp_remote_retrieve_body( $response ), true );
+    if ( ! isset( $data['files'][ $file ]['md5'] ) ) {
+        return new WP_Error( 'bs_restore', $file . ' is not in the official file list for ' . $slug . ' ' . $version . '.' );
+    }
+
+    // Some plugins only publish to trunk. If this tag doesn't exist, the download fails and we refuse.
+    return array(
+        'url' => 'https://plugins.svn.wordpress.org/' . $slug . '/tags/' . $version . '/' . $file,
+        'md5' => (array) $data['files'][ $file ]['md5'],
+    );
+}
+
+function bs_handle_restore() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( 'You are not allowed to do this.' );
+    }
+    check_admin_referer( 'bs_restore' );
+
+    $relative = isset( $_POST['file'] ) ? wp_unslash( $_POST['file'] ) : '';
+    $type     = isset( $_POST['type'] ) ? wp_unslash( $_POST['type'] ) : '';
+
+    $source = ( 'plugin' === $type ) ? bs_plugin_source( $relative ) : bs_core_source( $relative );
+    if ( is_wp_error( $source ) ) {
+        bs_redirect_with_notice( $source->get_error_message() );
+    }
+
+    // A missing file has no realpath, so check its folder instead. The folder must be inside WordPress.
+    $root = trailingslashit( realpath( ABSPATH ) );
+    $dir  = realpath( dirname( ABSPATH . $relative ) );
+    if ( ! $dir || 0 !== strpos( trailingslashit( $dir ), $root ) ) {
+        bs_redirect_with_notice( 'Could not find the folder for ' . $relative . '.' );
+    }
+    $path = $dir . '/' . basename( $relative );
+
+    // A symlink could point the write somewhere else, so refuse those too.
+    if ( 'wp-config.php' === basename( $path ) || is_link( $path )
+        || 0 === strpos( trailingslashit( $dir ), trailingslashit( realpath( __DIR__ ) ) ) ) {
+        bs_redirect_with_notice( 'That file is not allowed to be restored.' );
+    }
+
+    // Only write the download if it matches the official checksum.
+    $response = wp_remote_get( $source['url'], array( 'timeout' => 20 ) );
+    $body     = wp_remote_retrieve_body( $response );
+    if ( 200 !== wp_remote_retrieve_response_code( $response ) || ! in_array( md5( $body ), $source['md5'], true ) ) {
+        bs_redirect_with_notice( 'Could not get a copy of ' . $relative . ' that matches the official checksum. Nothing was changed.' );
+    }
+
+    // Keep the infected version as evidence.
+    $note = '';
+    if ( file_exists( $path ) ) {
+        if ( ! copy( $path, bs_quarantine_path( $relative ) ) ) {
+            bs_redirect_with_notice( 'Could not save a copy of ' . $relative . ' first. Nothing was changed.' );
+        }
+        $note = ' The old version was saved in bs-quarantine.';
+    }
+
+    if ( false === file_put_contents( $path, $body ) ) {
+        bs_redirect_with_notice( 'Could not write ' . $relative . '. Check file permissions.' );
+    }
+
+    bs_redirect_with_notice( 'Restored ' . $relative . ' from WordPress.org.' . $note );
 }
