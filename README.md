@@ -14,6 +14,17 @@ The demo runs in your browser with WordPress Playground. Nothing is installed on
 - **Core files.** Compares `wp-admin`, `wp-includes` and the root files with the official WordPress.org checksums. Flags files that were changed, are missing or shouldn't be there.
 - **Plugins.** Compares each plugin with its official file list on WordPress.org and flags changed, missing or extra files. Plugins that aren't on WordPress.org get the suspicious code check instead.
 
+## What it can fix
+
+Each finding has a button next to it. Every button asks you to confirm first, and only admins can use them.
+
+- **Remove admin.** Deletes a rogue admin and gives their posts to you. You can't remove your own account.
+- **Remove cron job.** Deletes every scheduled run of that hook.
+- **Quarantine.** Moves an extra file into `wp-content/bs-quarantine/` as a `.txt` file so it can't run. Nothing is deleted, so you can look at it later.
+- **Restore.** Downloads the official copy of a changed or missing core or plugin file from WordPress.org. It only writes the file if it matches the official checksum, and it saves the old version to quarantine first.
+
+Theme files don't have official checksums, so those still say "Reinstall the theme".
+
 ## What the demo site finds, and how to fix it
 
 The demo plants eight things that are common on real hacked sites. Several of them work together, which is also common.
@@ -77,6 +88,16 @@ One line was added to `wp-content/plugins/akismet/class.akismet.php`. The plugin
 wp plugin verify-checksums --all
 ```
 
+### Cleaning up the demo with the buttons
+
+Order matters. Remove the code that loads or reschedules things before removing what it loads.
+
+1. **Restore** `wp-includes/default-filters.php` and the Akismet file. This removes the line that loads the fake core file.
+2. **Quarantine** `class-wp-cache-helper.php`, `thumb.php` and `health-check-loader.php`.
+3. **Remove** the `wp_sysadmin` admin.
+4. **Remove** the `wp_maintenance_check` cron job last. Real malware often schedules its job again if its code is still there.
+
+The theme's `functions.php` is the one finding the buttons can't fix. On a real site you'd reinstall the theme.
 
 ### After the cleanup
 - Find how they got in. Outdated plugins and reused passwords are the usual causes. Check the server access logs around the dates the bad files appeared.
@@ -98,6 +119,8 @@ wp plugin verify-checksums --all
 ## Limits
 
 This is a quick first look, not a full malware scanner. It matches known function names, so heavily obfuscated code can get past it. Plugins that aren't on WordPress.org can only get the pattern check. A hacked site can also hide things from code running inside it, so check from the server too.
+
+The buttons fix what the scanner can prove. Restore only works for core files and plugins from WordPress.org, and only when the plugin's version is tagged there. Quarantine and Remove don't find anything new, so a clean scan after using them doesn't mean the site is clean. Take a backup before using any of them on a live site.
 
 ## Run it locally
 
