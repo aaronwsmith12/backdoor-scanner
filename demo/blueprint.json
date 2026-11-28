@@ -2,6 +2,7 @@
     "$schema": "https://playground.wordpress.net/blueprint-schema.json",
     "landingPage": "/wp-admin/tools.php?page=backdoor-scanner",
     "login": true,
+    "preferredVersions": { "wp": "7.1.5", "php": "8.3" },
     "steps": [
         {
             "step": "installPlugin",
