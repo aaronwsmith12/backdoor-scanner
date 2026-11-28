@@ -18,6 +18,8 @@ add_action( 'admin_post_bs_quarantine', 'bs_handle_quarantine' );
 
 add_action( 'admin_post_bs_restore', 'bs_handle_restore' );
 
+add_action( 'admin_post_bs_remove_admin', 'bs_handle_remove_admin' );
+
 function bs_add_admin_page() {
     add_management_page(
         'Backdoor Scanner',   // Text in the browser tab
@@ -41,7 +43,7 @@ function bs_render_page() {
     }
     echo '<h2>Admin users</h2>';
     echo '<table class="widefat striped">';
-    echo '<thead><tr><th>Username</th><th>Email</th><th>Registered</th></tr></thead>';
+    echo '<thead><tr><th>Username</th><th>Email</th><th>Registered</th><th>Action</th></tr></thead>';
     echo '<tbody>';
 
     foreach ( $admins as $admin ) {
@@ -49,6 +51,11 @@ function bs_render_page() {
         echo '<td>' . esc_html( $admin->user_login ) . '</td>';
         echo '<td>' . esc_html( $admin->user_email ) . '</td>';
         echo '<td>' . esc_html( $admin->user_registered ) . '</td>';
+        if ( get_current_user_id() === $admin->ID ) {
+            echo '<td><em>You</em></td>';
+        } else {
+            echo '<td>' . bs_action_button( 'bs_remove_admin', array( 'user_id' => $admin->ID ), 'Remove', 'Delete the admin ' . $admin->user_login . '? Their posts will be moved to you.' ) . '</td>';
+        }
         echo '</tr>';
     }
 
@@ -625,4 +632,36 @@ function bs_handle_restore() {
     }
 
     bs_redirect_with_notice( 'Restored ' . $relative . ' from WordPress.org.' . $note );
+}
+
+function bs_handle_remove_admin() {
+    if ( ! current_user_can( 'delete_users' ) ) {
+        wp_die( 'You are not allowed to do this.' );
+    }
+    check_admin_referer( 'bs_remove_admin' );
+
+    $user_id = isset( $_POST['user_id'] ) ? (int) $_POST['user_id'] : 0;
+    $user    = get_userdata( $user_id );
+
+    if ( ! $user ) {
+        bs_redirect_with_notice( 'Could not find that user.' );
+    }
+    // Deleting yourself would lock you out.
+    if ( get_current_user_id() === $user_id ) {
+        bs_redirect_with_notice( 'You cannot remove your own account.' );
+    }
+    // This button is only for admins. Other users are managed on the normal Users page.
+    if ( ! in_array( 'administrator', (array) $user->roles, true ) ) {
+        bs_redirect_with_notice( $user->user_login . ' is not an admin.' );
+    }
+
+    // wp_delete_user() lives in an admin file that isn't always loaded.
+    require_once ABSPATH . 'wp-admin/includes/user.php';
+
+    // The second argument moves their posts to you instead of deleting them.
+    if ( ! wp_delete_user( $user_id, get_current_user_id() ) ) {
+        bs_redirect_with_notice( 'Could not remove ' . $user->user_login . '.' );
+    }
+
+    bs_redirect_with_notice( 'Removed the admin ' . $user->user_login . '. Their posts now belong to you.' );
 }
